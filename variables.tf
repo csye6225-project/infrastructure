@@ -11,9 +11,9 @@ variable "profile" {
 }
 
 variable "shared_credentials_file" {
-  type = string
+  type        = string
   description = "AWS credential file"
-  default = "~/.aws/credentials"
+  default     = "~/.aws/credentials"
 }
 
 
@@ -73,4 +73,27 @@ variable "route_destination_cidr_block" {
   type        = string
   description = "Destination CIDR for Route"
   // default = "0.0.0.0/0"
+}
+
+variable "webapp_security_group_name" {
+  type        = string
+  description = "name for webapp_security_group_name"
+  default = "application"
+}
+
+variable "wsg_protocol" {
+  type = string
+  default = "tcp"
+}
+
+variable "db_security_group_name" {
+  type        = string
+  description = "name for db security group"
+  default = "database"
+}
+
+variable "db_instance_name" {
+  type        = string
+  description = "name for db instance"
+  default = "csye6225"
 }
