@@ -1,3 +1,15 @@
+data "aws_iam_role" "cdes_role" {
+  name = "CodeDeployEC2ServiceRole"
+}
+
+data "aws_iam_role" "cds_role" {
+  name = "CodeDeployServiceRole"
+}
+
+data "aws_route53_zone" "selected" {
+  name = var.hosted_zone_name
+}
+
 // Create a vpc demo
 resource "aws_vpc" "vpc" {
   cidr_block                       = var.vpc_cidr_block
@@ -136,14 +148,9 @@ resource "aws_security_group" "db_security_group" {
   }
 }
 
-resource "random_string" "random" {
-  length           = 2
-  special          = false
-}
-
 // Create s3 bucket
 resource "aws_s3_bucket" "bucket" {
-  bucket        = "${random_string.random.result}.dev.pengchengxu.me"
+  bucket        = "xpc.prod.pengchengxu.me"
   acl           = "private"
   force_destroy = true
 
@@ -197,14 +204,14 @@ resource "aws_db_instance" "db_instance" {
   identifier = var.db_instance_name
 
   allocated_storage = 10
-  engine            = "mysql"
+  engine            = var.db_instance_engine
   engine_version    = "8.0"
   multi_az          = false
 
-  instance_class         = "db.t3.micro"
+  instance_class         = var.db_instance_class
   name                   = "csye6225"
-  username               = "csye6225"
-  password               = "csye6225Fall2021"
+  username               = var.db_instance_username
+  password               = var.db_instance_password
   publicly_accessible    = false
   parameter_group_name   = aws_db_parameter_group.mysql_8.name
   vpc_security_group_ids = [aws_security_group.db_security_group.id]
@@ -213,13 +220,13 @@ resource "aws_db_instance" "db_instance" {
 }
 
 resource "aws_instance" "web" {
-  ami                     = "ami-01b060ebdbbcfedb5"
-  instance_type           = "t2.micro"
+  ami                     = var.ami
+  instance_type           = var.aws_instance_type
   disable_api_termination = false
-  key_name                = "csye6225"
+  key_name                = var.key_name
 
   depends_on           = [aws_db_instance.db_instance]
-  iam_instance_profile = aws_iam_instance_profile.iam_profile.name
+  iam_instance_profile = aws_iam_instance_profile.iam_role_profile.name
 
   vpc_security_group_ids = [aws_security_group.webapp_security_group.id]
   subnet_id              = element([for k, v in aws_subnet.subnet : v.id], 0)
@@ -229,24 +236,23 @@ resource "aws_instance" "web" {
     volume_size           = "20"
     volume_type           = "gp2"
   }
-
   user_data = <<EOF
 #!/bin/bash
-cd /usr/webapp || return
+cd /home/ubuntu/app || return
 touch application.properties
-echo "aws.access_key_id=" >> application.properties
-echo "aws.secret_access_key=" >> application.properties
-echo "aws.s3.region=us-east-1" >> application.properties
+echo "aws.access_key_id=${var.aws_access_key}" >> application.properties
+echo "aws.secret_access_key=${var.aws_secret_key}" >> application.properties
+echo "aws.s3.region=${var.region}" >> application.properties
 echo "aws.s3.bucket=${aws_s3_bucket.bucket.bucket}" >> application.properties
-
 echo "hibernate.connection.driver_class=com.mysql.cj.jdbc.Driver" >> application.properties
-echo "hibernate.connection.url=jdbc:mysql://${aws_db_instance.db_instance.endpoint}/csye6225?serverTimezone=UTC" >> application.properties" >> application.properties
+echo "hibernate.connection.url=jdbc:mysql://${aws_db_instance.db_instance.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC" >> application.properties
 echo "hibernate.connection.username=${aws_db_instance.db_instance.username}" >> application.properties
 echo "hibernate.connection.password=${aws_db_instance.db_instance.password}" >> application.properties
 echo "hibernate.dialect=org.hibernate.dialect.MySQL8Dialect" >> application.properties
 echo "hibernate.show_sql=true" >> application.properties
 echo "hibernate.hbm2ddl.auto=update" >> application.properties
-EOF
+
+  EOF
 
   tags = {
     Name = "ec2 instance"
@@ -255,47 +261,85 @@ EOF
 
 resource "aws_iam_policy" "policy" {
   name        = "WebAppS3"
-  path        = "/"
   description = "policy for s3"
 
   policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
+    "Version": "2012-10-17"
+    "Statement": [
       {
-        Action = [
-          "s3:*",
-        ]
-        Effect = "Allow"
-        Resource = [
-          "arn:aws:s3:::aws_s3_bucket.bucket.name",
-          "arn:aws:s3:::aws_s3_bucket.bucket.name/*"
-        ]
-      },
+        "Action": ["s3:DeleteObject", "s3:PutObject", "s3:GetObject"]
+        "Effect": "Allow"
+        "Resource": ["arn:aws:s3:::${aws_s3_bucket.bucket.bucket}", "arn:aws:s3:::${aws_s3_bucket.bucket.bucket}/*"]
+      }
     ]
   })
 }
 
-resource "aws_iam_role" "iam_role" {
-  name                = "EC2-CSYE6225"
-  managed_policy_arns = [aws_iam_policy.policy.arn]
-  assume_role_policy  = <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Action": "sts:AssumeRole",
-      "Principal": {
-        "Service": "ec2.amazonaws.com"
-      },
-     "Effect": "Allow",        
-     "Sid": ""
-    }
-  ]
-}
-EOF
+// resource "aws_iam_role" "iam_role" {
+//   name                = "EC2-CSYE6225"
+//   managed_policy_arns = [aws_iam_policy.policy.arn]
+//   assume_role_policy  = <<EOF
+// {
+//   "Version": "2012-10-17",
+//   "Statement": [
+//     {
+//       "Action": "sts:AssumeRole",
+//       "Principal": {
+//         "Service": "ec2.amazonaws.com"
+//       },
+//      "Effect": "Allow",        
+//      "Sid": ""
+//     }
+//   ]
+// }
+// EOF
+// }
+
+resource "aws_iam_policy_attachment" "web-app-s3-attach" {
+  name       = "gh-upload-to-s3-attachment"
+  roles      = [data.aws_iam_role.cdes_role.name]
+  policy_arn = aws_iam_policy.policy.arn
 }
 
-resource "aws_iam_instance_profile" "iam_profile" {
+resource "aws_iam_instance_profile" "iam_role_profile" {
   name = "iam_profile"
-  role = aws_iam_role.iam_role.name
+  role = data.aws_iam_role.cdes_role.name
+}
+
+resource "aws_codedeploy_app" "webapp" {
+  compute_platform = "Server"
+  name             = "csye6225-webapp"
+}
+
+
+resource "aws_codedeploy_deployment_group" "example" {
+  app_name              = aws_codedeploy_app.webapp.name
+  deployment_group_name = "csye6225-webapp-deployment"
+  deployment_config_name = "CodeDeployDefault.AllAtOnce"
+  service_role_arn      = data.aws_iam_role.cds_role.arn
+
+  auto_rollback_configuration {
+    enabled = true
+    events  = ["DEPLOYMENT_FAILURE"]
+  }
+
+  ec2_tag_set {
+    ec2_tag_filter {
+      key   = "Name"
+      type  = "KEY_AND_VALUE"
+      value = "ec2 instance"
+    }
+  }
+
+  deployment_style {
+    deployment_type   = "IN_PLACE"
+  }
+}
+
+resource "aws_route53_record" "route53_record" {
+  zone_id = data.aws_route53_zone.selected.zone_id
+  name    = var.hosted_zone_name
+  type    = "A"
+  ttl     = "300"
+  records = [aws_instance.web.public_ip]
 }
