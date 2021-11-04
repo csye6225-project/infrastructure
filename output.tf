@@ -15,7 +15,7 @@ output "route_table_id" {
 }
 
 output "bucket" {
-  value = aws_s3_bucket.bucket.name
+  value = aws_s3_bucket.bucket.bucket
 }
 
 output "rds" {

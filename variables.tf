@@ -5,17 +5,22 @@ variable "region" {
   default     = "us-east-1"
 }
 
-variable "profile" {
+variable "aws_access_key" {
   type        = string
-  description = "AWS credential"
+  description = "Access Key"
 }
 
-variable "shared_credentials_file" {
+variable "aws_secret_key" {
   type        = string
-  description = "AWS credential file"
-  default     = "~/.aws/credentials"
+  description = "Secret Key"
 }
 
+
+variable "ami" {
+  type        = string
+  description = "AMI"
+  default     = "ami-0470d82ed2cd2da28"
+}
 
 
 // VPC variables
@@ -78,22 +83,65 @@ variable "route_destination_cidr_block" {
 variable "webapp_security_group_name" {
   type        = string
   description = "name for webapp_security_group_name"
-  default = "application"
+  default     = "application"
 }
 
 variable "wsg_protocol" {
-  type = string
+  type    = string
   default = "tcp"
 }
 
 variable "db_security_group_name" {
   type        = string
   description = "name for db security group"
-  default = "database"
+  default     = "database"
 }
 
 variable "db_instance_name" {
   type        = string
   description = "name for db instance"
+  default     = "csye6225"
+}
+
+variable "db_instance_engine" {
+  type        = string
+  description = "engine for db instance"
+  default     = "mysql"
+}
+
+variable "db_instance_class" {
+  type        = string
+  description = "class for db instance"
+  default     = "db.t3.micro"
+}
+
+variable "db_instance_username" {
+  type        = string
+  description = "username for db instance"
+  default     = "csye6225"
+}
+
+variable "db_instance_password" {
+  type        = string
+  description = "password for db instance"
+  default     = "csye6225Fall2021"
+}
+
+variable "aws_instance_type" {
+  type        = string
+  description = "instance type"
+  default     = "t2.micro"
+}
+
+variable "hosted_zone_name" {
+  type    = string
+  default = "dev.pengchengxu.me"
+}
+
+
+variable "key_name" {
+  type    = string
   default = "csye6225"
 }
+
+
