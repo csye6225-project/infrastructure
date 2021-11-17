@@ -150,7 +150,7 @@ resource "aws_security_group" "db_security_group" {
 
 // Create s3 bucket
 resource "aws_s3_bucket" "bucket" {
-  bucket        = "xpc.prod.pengchengxu.me"
+  bucket        = var.s3_bucket_name
   acl           = "private"
   force_destroy = true
 
@@ -219,57 +219,57 @@ resource "aws_db_instance" "db_instance" {
   skip_final_snapshot    = true
 }
 
-resource "aws_instance" "web" {
-  ami                     = var.ami
-  instance_type           = var.aws_instance_type
-  disable_api_termination = false
-  key_name                = var.key_name
+// resource "aws_instance" "web" {
+//   ami                     = var.ami
+//   instance_type           = var.aws_instance_type
+//   disable_api_termination = false
+//   key_name                = var.key_name
 
-  depends_on           = [aws_db_instance.db_instance]
-  iam_instance_profile = aws_iam_instance_profile.iam_role_profile.name
+//   depends_on           = [aws_db_instance.db_instance]
+//   iam_instance_profile = aws_iam_instance_profile.iam_role_profile.name
 
-  vpc_security_group_ids = [aws_security_group.webapp_security_group.id]
-  subnet_id              = element([for k, v in aws_subnet.subnet : v.id], 0)
+//   vpc_security_group_ids = [aws_security_group.webapp_security_group.id]
+//   subnet_id              = element([for k, v in aws_subnet.subnet : v.id], 0)
 
-  root_block_device {
-    delete_on_termination = true
-    volume_size           = "20"
-    volume_type           = "gp2"
-  }
-  user_data = <<EOF
-#!/bin/bash
-cd /home/ubuntu/app || return
-touch application.properties
-echo "aws.access_key_id=${var.aws_access_key}" >> application.properties
-echo "aws.secret_access_key=${var.aws_secret_key}" >> application.properties
-echo "aws.s3.region=${var.region}" >> application.properties
-echo "aws.s3.bucket=${aws_s3_bucket.bucket.bucket}" >> application.properties
-echo "hibernate.connection.driver_class=com.mysql.cj.jdbc.Driver" >> application.properties
-echo "hibernate.connection.url=jdbc:mysql://${aws_db_instance.db_instance.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC" >> application.properties
-echo "hibernate.connection.username=${aws_db_instance.db_instance.username}" >> application.properties
-echo "hibernate.connection.password=${aws_db_instance.db_instance.password}" >> application.properties
-echo "hibernate.dialect=org.hibernate.dialect.MySQL8Dialect" >> application.properties
-echo "hibernate.show_sql=true" >> application.properties
-echo "hibernate.hbm2ddl.auto=update" >> application.properties
+//   root_block_device {
+//     delete_on_termination = true
+//     volume_size           = "20"
+//     volume_type           = "gp2"
+//   }
+//   user_data = <<EOF
+// #!/bin/bash
+// cd /home/ubuntu/app || return
+// touch application.properties
+// echo "aws.access_key_id=${var.aws_access_key}" >> application.properties
+// echo "aws.secret_access_key=${var.aws_secret_key}" >> application.properties
+// echo "aws.s3.region=${var.region}" >> application.properties
+// echo "aws.s3.bucket=${aws_s3_bucket.bucket.bucket}" >> application.properties
+// echo "hibernate.connection.driver_class=com.mysql.cj.jdbc.Driver" >> application.properties
+// echo "hibernate.connection.url=jdbc:mysql://${aws_db_instance.db_instance.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC" >> application.properties
+// echo "hibernate.connection.username=${aws_db_instance.db_instance.username}" >> application.properties
+// echo "hibernate.connection.password=${aws_db_instance.db_instance.password}" >> application.properties
+// echo "hibernate.dialect=org.hibernate.dialect.MySQL8Dialect" >> application.properties
+// echo "hibernate.show_sql=true" >> application.properties
+// echo "hibernate.hbm2ddl.auto=update" >> application.properties
 
-  EOF
+//   EOF
 
-  tags = {
-    Name = "ec2 instance"
-  }
-}
+//   tags = {
+//     Name = "ec2 instance"
+//   }
+// }
 
 resource "aws_iam_policy" "policy" {
   name        = "WebAppS3"
   description = "policy for s3"
 
   policy = jsonencode({
-    "Version": "2012-10-17"
-    "Statement": [
+    "Version" : "2012-10-17"
+    "Statement" : [
       {
-        "Action": ["s3:DeleteObject", "s3:PutObject", "s3:GetObject"]
-        "Effect": "Allow"
-        "Resource": ["arn:aws:s3:::${aws_s3_bucket.bucket.bucket}", "arn:aws:s3:::${aws_s3_bucket.bucket.bucket}/*"]
+        "Action" : ["s3:DeleteObject", "s3:PutObject", "s3:GetObject"]
+        "Effect" : "Allow"
+        "Resource" : ["arn:aws:s3:::${aws_s3_bucket.bucket.bucket}", "arn:aws:s3:::${aws_s3_bucket.bucket.bucket}/*"]
       }
     ]
   })
@@ -313,10 +313,11 @@ resource "aws_codedeploy_app" "webapp" {
 
 
 resource "aws_codedeploy_deployment_group" "example" {
-  app_name              = aws_codedeploy_app.webapp.name
-  deployment_group_name = "csye6225-webapp-deployment"
+  app_name               = aws_codedeploy_app.webapp.name
+  deployment_group_name  = "csye6225-webapp-deployment"
   deployment_config_name = "CodeDeployDefault.AllAtOnce"
-  service_role_arn      = data.aws_iam_role.cds_role.arn
+  service_role_arn       = data.aws_iam_role.cds_role.arn
+  autoscaling_groups     = [aws_autoscaling_group.autoscaling_group.name]
 
   auto_rollback_configuration {
     enabled = true
@@ -332,7 +333,7 @@ resource "aws_codedeploy_deployment_group" "example" {
   }
 
   deployment_style {
-    deployment_type   = "IN_PLACE"
+    deployment_type = "IN_PLACE"
   }
 }
 
@@ -340,6 +341,180 @@ resource "aws_route53_record" "route53_record" {
   zone_id = data.aws_route53_zone.selected.zone_id
   name    = var.hosted_zone_name
   type    = "A"
-  ttl     = "300"
-  records = [aws_instance.web.public_ip]
+  // ttl     = "300"
+  alias {
+    name                   = aws_lb.load_balancer.dns_name
+    zone_id                = aws_lb.load_balancer.zone_id
+    evaluate_target_health = true
+  }
+}
+
+resource "aws_launch_configuration" "launch_config" {
+  name                        = "asg_launch_config"
+  image_id                    = var.ami
+  instance_type               = var.aws_instance_type
+  key_name                    = var.key_name
+  associate_public_ip_address = true
+  security_groups             = [aws_security_group.webapp_security_group.id]
+  iam_instance_profile        = aws_iam_instance_profile.iam_role_profile.name
+
+  user_data = <<EOF
+#!/bin/bash
+cd /home/ubuntu/app || return
+touch application.properties
+echo "aws.access_key_id=${var.aws_access_key}" >> application.properties
+echo "aws.secret_access_key=${var.aws_secret_key}" >> application.properties
+echo "aws.s3.region=${var.region}" >> application.properties
+echo "aws.s3.bucket=${aws_s3_bucket.bucket.bucket}" >> application.properties
+echo "hibernate.connection.driver_class=com.mysql.cj.jdbc.Driver" >> application.properties
+echo "hibernate.connection.url=jdbc:mysql://${aws_db_instance.db_instance.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC" >> application.properties
+echo "hibernate.connection.username=${aws_db_instance.db_instance.username}" >> application.properties
+echo "hibernate.connection.password=${aws_db_instance.db_instance.password}" >> application.properties
+echo "hibernate.dialect=org.hibernate.dialect.MySQL8Dialect" >> application.properties
+echo "hibernate.show_sql=true" >> application.properties
+echo "hibernate.hbm2ddl.auto=update" >> application.properties
+echo "logging.file.name=csye6225.log" >> application.properties
+echo "logging.level.root=warn" >> application.properties
+echo "logging.level.org.springframework.web=debug" >> application.properties
+echo "logging.level.org.hibernate=error" >> application.properties 
+  EOF
+
+}
+
+
+resource "aws_autoscaling_group" "autoscaling_group" {
+  name                 = "ec2_autoscaling"
+  default_cooldown     = 60
+  launch_configuration = aws_launch_configuration.launch_config.name
+  min_size             = 3
+  max_size             = 5
+  desired_capacity     = 3
+  vpc_zone_identifier  = [for k, v in aws_subnet.subnet : v.id]
+
+  tag {
+    key                 = "Name"
+    value               = "ec2 instance"
+    propagate_at_launch = true
+  }
+}
+
+resource "aws_autoscaling_policy" "scale_up" {
+  name                   = "scale_up"
+  scaling_adjustment     = 1
+  adjustment_type        = "ChangeInCapacity"
+  cooldown               = 10
+  autoscaling_group_name = aws_autoscaling_group.autoscaling_group.name
+}
+
+resource "aws_cloudwatch_metric_alarm" "over_five" {
+  alarm_name          = "over_five"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = "60"
+  statistic           = "Average"
+  threshold           = "5"
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.autoscaling_group.name
+  }
+
+  alarm_description = "Monitors ec2 cpu utilization over 5%"
+  alarm_actions     = [aws_autoscaling_policy.scale_up.arn]
+}
+
+resource "aws_autoscaling_policy" "scale_down" {
+  name                   = "scale_down"
+  scaling_adjustment     = -1
+  adjustment_type        = "ChangeInCapacity"
+  cooldown               = 10
+  autoscaling_group_name = aws_autoscaling_group.autoscaling_group.name
+}
+
+resource "aws_cloudwatch_metric_alarm" "below_three" {
+  alarm_name          = "below_three"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = "60"
+  statistic           = "Average"
+  threshold           = "3"
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.autoscaling_group.name
+  }
+
+  alarm_description = "Monitors ec2 cpu utilization below 3%"
+  alarm_actions     = [aws_autoscaling_policy.scale_down.arn]
+}
+
+resource "aws_security_group" "lb_security_group" {
+  name        = "lb_security_group"
+  description = "Load Balancer Security Groups"
+  vpc_id      = aws_vpc.vpc.id
+
+  ingress {
+    description      = "TCP Access"
+    from_port        = 80
+    to_port          = 80
+    protocol         = var.wsg_protocol
+    ipv6_cidr_blocks = ["::/0"]
+    cidr_blocks      = [var.route_destination_cidr_block]
+  }
+
+  egress {
+    from_port = 8080
+    to_port   = 8080
+    protocol  = var.wsg_protocol
+    security_groups = [aws_security_group.webapp_security_group.id]
+  }
+
+  tags = {
+    Name = "application"
+  }
+}
+
+resource "aws_lb" "load_balancer" {
+  name               = "applb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.lb_security_group.id]
+  subnets            = [for k, v in aws_subnet.subnet : v.id]
+
+  tags = {
+    Environment = "production"
+  }
+}
+
+resource "aws_lb_listener" "front_end" {
+  load_balancer_arn = aws_lb.load_balancer.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.target_group.arn
+  }
+}
+
+resource "aws_lb_target_group" "target_group" {
+  name     = "lb-target-group"
+  port     = 8080
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.vpc.id
+  health_check {
+    path = "/123"
+    healthy_threshold = 3
+    unhealthy_threshold = 2
+    timeout = 5
+    interval = 10
+    matcher = "200"
+  }
+}
+
+resource "aws_autoscaling_attachment" "tg_attachment" {
+  autoscaling_group_name = aws_autoscaling_group.autoscaling_group.id
+  alb_target_group_arn   = aws_lb_target_group.target_group.arn
 }

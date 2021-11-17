@@ -19,7 +19,6 @@ variable "aws_secret_key" {
 variable "ami" {
   type        = string
   description = "AMI"
-  default     = "ami-0470d82ed2cd2da28"
 }
 
 
@@ -135,7 +134,7 @@ variable "aws_instance_type" {
 
 variable "hosted_zone_name" {
   type    = string
-  default = "dev.pengchengxu.me"
+  default = "prod.pengchengxu.me"
 }
 
 
@@ -144,4 +143,8 @@ variable "key_name" {
   default = "csye6225"
 }
 
+variable "s3_bucket_name" {
+  type    = string
+  default = "xpc.prod.pengchengxu.me"
+}
 
