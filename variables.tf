@@ -102,6 +102,12 @@ variable "db_instance_name" {
   default     = "csye6225"
 }
 
+variable "db_instance_replica_name" {
+  type        = string
+  description = "name for db instance read replica"
+  default     = "csye6225-replica"
+}
+
 variable "db_instance_engine" {
   type        = string
   description = "engine for db instance"
