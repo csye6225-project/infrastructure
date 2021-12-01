@@ -200,6 +200,16 @@ resource "aws_db_subnet_group" "db_subnet_group" {
   }
 }
 
+resource "aws_db_subnet_group" "replica_subnet_group" {
+  depends_on = [aws_subnet.subnet]
+  name       = "replica"
+  subnet_ids = [element([for k, v in aws_subnet.subnet : v.id], 0), element([for k, v in aws_subnet.subnet : v.id], 2)]
+
+  tags = {
+    Name = "DB replica subnet group"
+  }
+}
+
 resource "aws_db_instance" "db_instance" {
   identifier = var.db_instance_name
 
@@ -208,14 +218,31 @@ resource "aws_db_instance" "db_instance" {
   engine_version    = "8.0"
   multi_az          = false
 
+  instance_class          = var.db_instance_class
+  name                    = "csye6225"
+  username                = var.db_instance_username
+  password                = var.db_instance_password
+  publicly_accessible     = false
+  parameter_group_name    = aws_db_parameter_group.mysql_8.name
+  vpc_security_group_ids  = [aws_security_group.db_security_group.id]
+  db_subnet_group_name    = aws_db_subnet_group.db_subnet_group.name
+  skip_final_snapshot     = true
+  backup_retention_period = 1
+}
+
+resource "aws_db_instance" "db_instance_replica" {
+  identifier = var.db_instance_replica_name
+
+  replicate_source_db = aws_db_instance.db_instance.arn
+
+  multi_az = false
+
   instance_class         = var.db_instance_class
-  name                   = "csye6225"
-  username               = var.db_instance_username
-  password               = var.db_instance_password
+  name                   = "csye6225_replica"
   publicly_accessible    = false
   parameter_group_name   = aws_db_parameter_group.mysql_8.name
   vpc_security_group_ids = [aws_security_group.db_security_group.id]
-  db_subnet_group_name   = aws_db_subnet_group.db_subnet_group.name
+  db_subnet_group_name   = aws_db_subnet_group.replica_subnet_group.name
   skip_final_snapshot    = true
 }
 
@@ -366,13 +393,22 @@ echo "aws.access_key_id=${var.aws_access_key}" >> application.properties
 echo "aws.secret_access_key=${var.aws_secret_key}" >> application.properties
 echo "aws.s3.region=${var.region}" >> application.properties
 echo "aws.s3.bucket=${aws_s3_bucket.bucket.bucket}" >> application.properties
-echo "hibernate.connection.driver_class=com.mysql.cj.jdbc.Driver" >> application.properties
-echo "hibernate.connection.url=jdbc:mysql://${aws_db_instance.db_instance.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC" >> application.properties
-echo "hibernate.connection.username=${aws_db_instance.db_instance.username}" >> application.properties
-echo "hibernate.connection.password=${aws_db_instance.db_instance.password}" >> application.properties
-echo "hibernate.dialect=org.hibernate.dialect.MySQL8Dialect" >> application.properties
-echo "hibernate.show_sql=true" >> application.properties
-echo "hibernate.hbm2ddl.auto=update" >> application.properties
+echo "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver" >> application.properties
+echo "spring.datasource.url=jdbc:mysql://${aws_db_instance.db_instance.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC" >> application.properties
+echo "spring.datasource.username=${aws_db_instance.db_instance.username}" >> application.properties
+echo "spring.datasource.password=${aws_db_instance.db_instance.password}" >> application.properties
+
+echo "spring.seconddatasource.driverClassName=com.mysql.cj.jdbc.Driver" >> application.properties
+
+echo "spring.seconddatasource.url=jdbc:mysql://${aws_db_instance.db_instance_replica.endpoint}/${aws_db_instance.db_instance_replica.name}?serverTimezone=UTC" >> application.properties
+echo "spring.seconddatasource.username=${aws_db_instance.db_instance.username}" >> application.properties
+echo "spring.seconddatasource.password=${aws_db_instance.db_instance.password}" >> application.properties
+
+echo "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.MySQL8Dialect" >> application.properties
+echo "spring.jpa.database=mysql" >> application.properties
+echo "spring.jpa.show-sql=true" >> application.properties
+echo "spring.jpa.hibernate.ddl-auto=update" >> application.properties
+
 echo "logging.file.name=csye6225.log" >> application.properties
 echo "logging.level.root=warn" >> application.properties
 echo "logging.level.org.springframework.web=debug" >> application.properties
@@ -465,9 +501,9 @@ resource "aws_security_group" "lb_security_group" {
   }
 
   egress {
-    from_port = 8080
-    to_port   = 8080
-    protocol  = var.wsg_protocol
+    from_port       = 8080
+    to_port         = 8080
+    protocol        = var.wsg_protocol
     security_groups = [aws_security_group.webapp_security_group.id]
   }
 
@@ -505,16 +541,95 @@ resource "aws_lb_target_group" "target_group" {
   protocol = "HTTP"
   vpc_id   = aws_vpc.vpc.id
   health_check {
-    path = "/123"
-    healthy_threshold = 3
+    path                = "/123"
+    healthy_threshold   = 3
     unhealthy_threshold = 2
-    timeout = 5
-    interval = 10
-    matcher = "200"
+    timeout             = 5
+    interval            = 10
+    matcher             = "200"
   }
 }
 
 resource "aws_autoscaling_attachment" "tg_attachment" {
   autoscaling_group_name = aws_autoscaling_group.autoscaling_group.id
   alb_target_group_arn   = aws_lb_target_group.target_group.arn
+}
+
+resource "aws_dynamodb_table" "dynamodb_table" {
+  name     = "verification"
+  hash_key = "email"
+
+  billing_mode = "PAY_PER_REQUEST"
+
+  attribute {
+    name = "email"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expireTime"
+    enabled        = true
+  }
+}
+
+resource "aws_sns_topic" "verification_notice" {
+  name = "verification-notice"
+}
+
+// resource "aws_s3_bucket" "lambda_bucket" {
+//   bucket        = "lambdadeploy.prod.pengchengxu.me"
+//   acl           = "private"
+//   force_destroy = true
+
+
+//   server_side_encryption_configuration {
+//     rule {
+//       apply_server_side_encryption_by_default {
+//         sse_algorithm = "aws:kms"
+//       }
+//     }
+//   }
+
+//   lifecycle_rule {
+//     id      = "archive"
+//     enabled = true
+//     prefix  = "archive/"
+
+//     transition {
+//       days          = 30
+//       storage_class = "STANDARD_IA"
+//     }
+//   }
+// }
+
+resource "aws_iam_role" "lambda_role" {
+  name = "lambda_iam_role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Sid    = ""
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "lambda" {
+  function_name = "send_email"
+  role          = aws_iam_role.lambda_role.arn
+  filename      = "untitled-1.0-SNAPSHOT.jar"
+  handler       = "LambdaFunctionHandler"
+  runtime       = "java8"
+}
+
+resource "aws_sns_topic_subscription" "sns_to_lambda" {
+  topic_arn = aws_sns_topic.verification_notice.arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.lambda.arn
 }
