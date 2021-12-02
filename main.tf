@@ -10,6 +10,14 @@ data "aws_route53_zone" "selected" {
   name = var.hosted_zone_name
 }
 
+data "aws_iam_policy" "dynamodb_policy" {
+  name = "AmazonDynamoDBFullAccess"
+}
+
+data "aws_iam_policy" "sns_policy" {
+  name = "AmazonSNSFullAccess"
+}
+
 // Create a vpc demo
 resource "aws_vpc" "vpc" {
   cidr_block                       = var.vpc_cidr_block
@@ -58,6 +66,7 @@ resource "aws_route_table" "route_table" {
   }
 }
 resource "aws_route_table_association" "aws_route_table_association" {
+  depends_on = [aws_subnet.subnet]
   for_each = aws_subnet.subnet
 
   subnet_id      = aws_subnet.subnet[each.key].id
@@ -200,15 +209,15 @@ resource "aws_db_subnet_group" "db_subnet_group" {
   }
 }
 
-resource "aws_db_subnet_group" "replica_subnet_group" {
-  depends_on = [aws_subnet.subnet]
-  name       = "replica"
-  subnet_ids = [element([for k, v in aws_subnet.subnet : v.id], 0), element([for k, v in aws_subnet.subnet : v.id], 2)]
+// resource "aws_db_subnet_group" "replica_subnet_group" {
+//   depends_on = [aws_subnet.subnet]
+//   name       = "replica"
+//   subnet_ids = [element([for k, v in aws_subnet.subnet : v.id], 0), element([for k, v in aws_subnet.subnet : v.id], 2)]
 
-  tags = {
-    Name = "DB replica subnet group"
-  }
-}
+//   tags = {
+//     Name = "DB replica subnet group"
+//   }
+// }
 
 resource "aws_db_instance" "db_instance" {
   identifier = var.db_instance_name
@@ -238,11 +247,10 @@ resource "aws_db_instance" "db_instance_replica" {
   multi_az = false
 
   instance_class         = var.db_instance_class
-  name                   = "csye6225_replica"
   publicly_accessible    = false
   parameter_group_name   = aws_db_parameter_group.mysql_8.name
   vpc_security_group_ids = [aws_security_group.db_security_group.id]
-  db_subnet_group_name   = aws_db_subnet_group.replica_subnet_group.name
+  db_subnet_group_name   = aws_db_subnet_group.db_subnet_group.name
   skip_final_snapshot    = true
 }
 
@@ -328,6 +336,18 @@ resource "aws_iam_policy_attachment" "web-app-s3-attach" {
   policy_arn = aws_iam_policy.policy.arn
 }
 
+resource "aws_iam_policy_attachment" "dynamodb-ec2-attach" {
+  name       = "ec2-use-dynamodb-attachment"
+  roles      = [data.aws_iam_role.cdes_role.name]
+  policy_arn = data.aws_iam_policy.dynamodb_policy.arn
+}
+
+resource "aws_iam_policy_attachment" "sns-ec2-attach" {
+  name       = "ec2-use-sns-attachment"
+  roles      = [data.aws_iam_role.cdes_role.name]
+  policy_arn = data.aws_iam_policy.sns_policy.arn
+}
+
 resource "aws_iam_instance_profile" "iam_role_profile" {
   name = "iam_profile"
   role = data.aws_iam_role.cdes_role.name
@@ -391,16 +411,17 @@ cd /home/ubuntu/app || return
 touch application.properties
 echo "aws.access_key_id=${var.aws_access_key}" >> application.properties
 echo "aws.secret_access_key=${var.aws_secret_key}" >> application.properties
-echo "aws.s3.region=${var.region}" >> application.properties
+echo "aws.region=${var.region}" >> application.properties
 echo "aws.s3.bucket=${aws_s3_bucket.bucket.bucket}" >> application.properties
+echo "aws.sns.arn=${aws_sns_topic_subscription.sns_to_lambda.arn}" >> application.properties
+
 echo "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver" >> application.properties
-echo "spring.datasource.url=jdbc:mysql://${aws_db_instance.db_instance.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC" >> application.properties
+echo "spring.datasource.jdbc-url=jdbc:mysql://${aws_db_instance.db_instance.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC" >> application.properties
 echo "spring.datasource.username=${aws_db_instance.db_instance.username}" >> application.properties
 echo "spring.datasource.password=${aws_db_instance.db_instance.password}" >> application.properties
 
 echo "spring.seconddatasource.driverClassName=com.mysql.cj.jdbc.Driver" >> application.properties
-
-echo "spring.seconddatasource.url=jdbc:mysql://${aws_db_instance.db_instance_replica.endpoint}/${aws_db_instance.db_instance_replica.name}?serverTimezone=UTC" >> application.properties
+echo "spring.seconddatasource.jdbc-url=jdbc:mysql://${aws_db_instance.db_instance_replica.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC" >> application.properties
 echo "spring.seconddatasource.username=${aws_db_instance.db_instance.username}" >> application.properties
 echo "spring.seconddatasource.password=${aws_db_instance.db_instance.password}" >> application.properties
 
@@ -602,6 +623,18 @@ resource "aws_sns_topic" "verification_notice" {
 //   }
 // }
 
+resource "aws_iam_policy_attachment" "dynamodb-lambda-attach" {
+  name       = "lambda-use-dynamodb-attachment"
+  roles      = [aws_iam_role.lambda_role.name]
+  policy_arn = data.aws_iam_policy.dynamodb_policy.arn
+}
+
+resource "aws_iam_policy_attachment" "sns-lambda-attach" {
+  name       = "lambda-use-sns-attachment"
+  roles      = [aws_iam_role.lambda_role.name]
+  policy_arn = data.aws_iam_policy.sns_policy.arn
+}
+
 resource "aws_iam_role" "lambda_role" {
   name = "lambda_iam_role"
 
@@ -628,8 +661,17 @@ resource "aws_lambda_function" "lambda" {
   runtime       = "java8"
 }
 
+resource "aws_lambda_permission" "sns_permission" {
+  statement_id  = "AllowExecutionFromSNS"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.lambda.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.verification_notice.arn
+}
+
 resource "aws_sns_topic_subscription" "sns_to_lambda" {
-  topic_arn = aws_sns_topic.verification_notice.arn
-  protocol  = "lambda"
-  endpoint  = aws_lambda_function.lambda.arn
+  depends_on = [aws_lambda_function.lambda, aws_sns_topic.verification_notice]
+  topic_arn  = aws_sns_topic.verification_notice.arn
+  protocol   = "lambda"
+  endpoint   = aws_lambda_function.lambda.arn
 }
