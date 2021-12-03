@@ -10,12 +10,59 @@ data "aws_route53_zone" "selected" {
   name = var.hosted_zone_name
 }
 
-data "aws_iam_policy" "dynamodb_policy" {
-  name = "AmazonDynamoDBFullAccess"
+data "aws_iam_policy_document" "sns_policy_document" {
+  version = "2012-10-17"
+  statement {
+    sid = "ec2publish"
+    actions = [
+      "sns:Publish"
+    ]
+    resources = [
+      aws_sns_topic.verification_notice.arn
+    ]
+    effect = "Allow"
+  }
 }
 
-data "aws_iam_policy" "sns_policy" {
-  name = "AmazonSNSFullAccess"
+data "aws_iam_policy_document" "dynamodb_policy_document" {
+  version = "2012-10-17"
+  statement {
+    sid = "ListAndDescribe"
+    actions = [
+      "dynamodb:List*",
+      "dynamodb:DescribeReservedCapacity*",
+      "dynamodb:DescribeLimits",
+      "dynamodb:DescribeTimeToLive"
+    ]
+    resources = [
+      "*"
+    ]
+    effect = "Allow"
+  }
+  statement {
+    sid = "SpecificTable"
+    actions = [
+      "dynamodb:BatchGet*",
+      "dynamodb:DescribeStream",
+      "dynamodb:DescribeTable",
+      "dynamodb:Get*",
+      "dynamodb:Query",
+      "dynamodb:Scan",
+      "dynamodb:BatchWrite*",
+      "dynamodb:CreateTable",
+      "dynamodb:Delete*",
+      "dynamodb:Update*",
+      "dynamodb:PutItem"
+    ]
+    resources = [
+      "arn:aws:dynamodb:*:*:table/verification"
+    ]
+    effect = "Allow"
+  }
+}
+
+data "aws_iam_policy" "lambda_basic" {
+  name = "AWSLambdaBasicExecutionRole"
 }
 
 // Create a vpc demo
@@ -67,7 +114,7 @@ resource "aws_route_table" "route_table" {
 }
 resource "aws_route_table_association" "aws_route_table_association" {
   depends_on = [aws_subnet.subnet]
-  for_each = aws_subnet.subnet
+  for_each   = aws_subnet.subnet
 
   subnet_id      = aws_subnet.subnet[each.key].id
   route_table_id = aws_route_table.route_table.id
@@ -254,46 +301,6 @@ resource "aws_db_instance" "db_instance_replica" {
   skip_final_snapshot    = true
 }
 
-// resource "aws_instance" "web" {
-//   ami                     = var.ami
-//   instance_type           = var.aws_instance_type
-//   disable_api_termination = false
-//   key_name                = var.key_name
-
-//   depends_on           = [aws_db_instance.db_instance]
-//   iam_instance_profile = aws_iam_instance_profile.iam_role_profile.name
-
-//   vpc_security_group_ids = [aws_security_group.webapp_security_group.id]
-//   subnet_id              = element([for k, v in aws_subnet.subnet : v.id], 0)
-
-//   root_block_device {
-//     delete_on_termination = true
-//     volume_size           = "20"
-//     volume_type           = "gp2"
-//   }
-//   user_data = <<EOF
-// #!/bin/bash
-// cd /home/ubuntu/app || return
-// touch application.properties
-// echo "aws.access_key_id=${var.aws_access_key}" >> application.properties
-// echo "aws.secret_access_key=${var.aws_secret_key}" >> application.properties
-// echo "aws.s3.region=${var.region}" >> application.properties
-// echo "aws.s3.bucket=${aws_s3_bucket.bucket.bucket}" >> application.properties
-// echo "hibernate.connection.driver_class=com.mysql.cj.jdbc.Driver" >> application.properties
-// echo "hibernate.connection.url=jdbc:mysql://${aws_db_instance.db_instance.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC" >> application.properties
-// echo "hibernate.connection.username=${aws_db_instance.db_instance.username}" >> application.properties
-// echo "hibernate.connection.password=${aws_db_instance.db_instance.password}" >> application.properties
-// echo "hibernate.dialect=org.hibernate.dialect.MySQL8Dialect" >> application.properties
-// echo "hibernate.show_sql=true" >> application.properties
-// echo "hibernate.hbm2ddl.auto=update" >> application.properties
-
-//   EOF
-
-//   tags = {
-//     Name = "ec2 instance"
-//   }
-// }
-
 resource "aws_iam_policy" "policy" {
   name        = "WebAppS3"
   description = "policy for s3"
@@ -330,6 +337,16 @@ resource "aws_iam_policy" "policy" {
 // EOF
 // }
 
+resource "aws_iam_policy" "sns_policy" {
+  name        = "sns-policy"
+  policy      = data.aws_iam_policy_document.sns_policy_document.json
+}
+
+resource "aws_iam_policy" "dynamodb_policy" {
+  name        = "dynamodb-policy"
+  policy      = data.aws_iam_policy_document.dynamodb_policy_document.json
+}
+
 resource "aws_iam_policy_attachment" "web-app-s3-attach" {
   name       = "gh-upload-to-s3-attachment"
   roles      = [data.aws_iam_role.cdes_role.name]
@@ -339,13 +356,13 @@ resource "aws_iam_policy_attachment" "web-app-s3-attach" {
 resource "aws_iam_policy_attachment" "dynamodb-ec2-attach" {
   name       = "ec2-use-dynamodb-attachment"
   roles      = [data.aws_iam_role.cdes_role.name]
-  policy_arn = data.aws_iam_policy.dynamodb_policy.arn
+  policy_arn = aws_iam_policy.dynamodb_policy.arn
 }
 
 resource "aws_iam_policy_attachment" "sns-ec2-attach" {
   name       = "ec2-use-sns-attachment"
   roles      = [data.aws_iam_role.cdes_role.name]
-  policy_arn = data.aws_iam_policy.sns_policy.arn
+  policy_arn = aws_iam_policy.sns_policy.arn
 }
 
 resource "aws_iam_instance_profile" "iam_role_profile" {
@@ -413,7 +430,7 @@ echo "aws.access_key_id=${var.aws_access_key}" >> application.properties
 echo "aws.secret_access_key=${var.aws_secret_key}" >> application.properties
 echo "aws.region=${var.region}" >> application.properties
 echo "aws.s3.bucket=${aws_s3_bucket.bucket.bucket}" >> application.properties
-echo "aws.sns.arn=${aws_sns_topic_subscription.sns_to_lambda.arn}" >> application.properties
+echo "aws.sns.arn=${aws_sns_topic.verification_notice.arn}" >> application.properties
 
 echo "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver" >> application.properties
 echo "spring.datasource.jdbc-url=jdbc:mysql://${aws_db_instance.db_instance.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC" >> application.properties
@@ -579,6 +596,8 @@ resource "aws_autoscaling_attachment" "tg_attachment" {
 resource "aws_dynamodb_table" "dynamodb_table" {
   name     = "verification"
   hash_key = "email"
+  read_capacity = 5
+  write_capacity = 5
 
   billing_mode = "PAY_PER_REQUEST"
 
@@ -597,42 +616,16 @@ resource "aws_sns_topic" "verification_notice" {
   name = "verification-notice"
 }
 
-// resource "aws_s3_bucket" "lambda_bucket" {
-//   bucket        = "lambdadeploy.prod.pengchengxu.me"
-//   acl           = "private"
-//   force_destroy = true
-
-
-//   server_side_encryption_configuration {
-//     rule {
-//       apply_server_side_encryption_by_default {
-//         sse_algorithm = "aws:kms"
-//       }
-//     }
-//   }
-
-//   lifecycle_rule {
-//     id      = "archive"
-//     enabled = true
-//     prefix  = "archive/"
-
-//     transition {
-//       days          = 30
-//       storage_class = "STANDARD_IA"
-//     }
-//   }
-// }
-
 resource "aws_iam_policy_attachment" "dynamodb-lambda-attach" {
   name       = "lambda-use-dynamodb-attachment"
   roles      = [aws_iam_role.lambda_role.name]
-  policy_arn = data.aws_iam_policy.dynamodb_policy.arn
+  policy_arn = aws_iam_policy.dynamodb_policy.arn
 }
 
-resource "aws_iam_policy_attachment" "sns-lambda-attach" {
-  name       = "lambda-use-sns-attachment"
+resource "aws_iam_policy_attachment" "lambda-basic-attach" {
+  name       = "lambda-basic-attachment"
   roles      = [aws_iam_role.lambda_role.name]
-  policy_arn = data.aws_iam_policy.sns_policy.arn
+  policy_arn = data.aws_iam_policy.lambda_basic.arn
 }
 
 resource "aws_iam_role" "lambda_role" {
@@ -644,7 +637,6 @@ resource "aws_iam_role" "lambda_role" {
       {
         Action = "sts:AssumeRole"
         Effect = "Allow"
-        Sid    = ""
         Principal = {
           Service = "lambda.amazonaws.com"
         }
@@ -659,6 +651,7 @@ resource "aws_lambda_function" "lambda" {
   filename      = "untitled-1.0-SNAPSHOT.jar"
   handler       = "LambdaFunctionHandler"
   runtime       = "java8"
+  memory_size   = 3072
 }
 
 resource "aws_lambda_permission" "sns_permission" {
