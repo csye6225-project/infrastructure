@@ -11,3 +11,10 @@ you need to provide
 - route table cidr block
 - route destination cidr block
 in .tfvars file 
+
+
+import certificate to AWS Certificate Manager
+
+aws acm import-certificate --certificate fileb://prod_pengchengxu_me.crt \
+      --certificate-chain fileb://prod_pengchengxu_me.ca-bundle \
+      --private-key fileb://private.key 

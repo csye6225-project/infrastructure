@@ -231,6 +231,13 @@ resource "aws_s3_bucket" "bucket" {
   }
 }
 
+resource "aws_s3_bucket_public_access_block" "s3_block" {
+  bucket = aws_s3_bucket.bucket.id
+
+  block_public_acls   = true
+  block_public_policy = true
+}
+
 resource "aws_db_parameter_group" "mysql_8" {
   name   = "rds-pg"
   family = "mysql8.0"
@@ -244,6 +251,12 @@ resource "aws_db_parameter_group" "mysql_8" {
     name  = "character_set_client"
     value = "utf8"
   }
+
+  parameter {
+    name = "performance_schema"
+    value = "1"
+    apply_method = "pending-reboot"
+  }
 }
 
 resource "aws_db_subnet_group" "db_subnet_group" {
@@ -256,23 +269,15 @@ resource "aws_db_subnet_group" "db_subnet_group" {
   }
 }
 
-// resource "aws_db_subnet_group" "replica_subnet_group" {
-//   depends_on = [aws_subnet.subnet]
-//   name       = "replica"
-//   subnet_ids = [element([for k, v in aws_subnet.subnet : v.id], 0), element([for k, v in aws_subnet.subnet : v.id], 2)]
-
-//   tags = {
-//     Name = "DB replica subnet group"
-//   }
-// }
-
 resource "aws_db_instance" "db_instance" {
   identifier = var.db_instance_name
 
+  storage_encrypted = true
   allocated_storage = 10
   engine            = var.db_instance_engine
   engine_version    = "8.0"
   multi_az          = false
+  kms_key_id        = aws_kms_key.rds_key.arn
 
   instance_class          = var.db_instance_class
   name                    = "csye6225"
@@ -290,9 +295,11 @@ resource "aws_db_instance" "db_instance_replica" {
   identifier = var.db_instance_replica_name
 
   replicate_source_db = aws_db_instance.db_instance.arn
+  kms_key_id          = aws_kms_key.rds_key.arn
 
   multi_az = false
 
+  storage_encrypted      = true
   instance_class         = var.db_instance_class
   publicly_accessible    = false
   parameter_group_name   = aws_db_parameter_group.mysql_8.name
@@ -317,34 +324,14 @@ resource "aws_iam_policy" "policy" {
   })
 }
 
-// resource "aws_iam_role" "iam_role" {
-//   name                = "EC2-CSYE6225"
-//   managed_policy_arns = [aws_iam_policy.policy.arn]
-//   assume_role_policy  = <<EOF
-// {
-//   "Version": "2012-10-17",
-//   "Statement": [
-//     {
-//       "Action": "sts:AssumeRole",
-//       "Principal": {
-//         "Service": "ec2.amazonaws.com"
-//       },
-//      "Effect": "Allow",        
-//      "Sid": ""
-//     }
-//   ]
-// }
-// EOF
-// }
-
 resource "aws_iam_policy" "sns_policy" {
-  name        = "sns-policy"
-  policy      = data.aws_iam_policy_document.sns_policy_document.json
+  name   = "sns-policy"
+  policy = data.aws_iam_policy_document.sns_policy_document.json
 }
 
 resource "aws_iam_policy" "dynamodb_policy" {
-  name        = "dynamodb-policy"
-  policy      = data.aws_iam_policy_document.dynamodb_policy_document.json
+  name   = "dynamodb-policy"
+  policy = data.aws_iam_policy_document.dynamodb_policy_document.json
 }
 
 resource "aws_iam_policy_attachment" "web-app-s3-attach" {
@@ -413,6 +400,14 @@ resource "aws_route53_record" "route53_record" {
   }
 }
 
+resource "aws_ebs_default_kms_key" "ebs_default_kms_key" {
+  key_arn = aws_kms_key.ebs_key.arn
+}
+
+resource "aws_ebs_encryption_by_default" "ebs_default_encryption" {
+  enabled = true
+}
+
 resource "aws_launch_configuration" "launch_config" {
   name                        = "asg_launch_config"
   image_id                    = var.ami
@@ -426,19 +421,17 @@ resource "aws_launch_configuration" "launch_config" {
 #!/bin/bash
 cd /home/ubuntu/app || return
 touch application.properties
-echo "aws.access_key_id=${var.aws_access_key}" >> application.properties
-echo "aws.secret_access_key=${var.aws_secret_key}" >> application.properties
 echo "aws.region=${var.region}" >> application.properties
 echo "aws.s3.bucket=${aws_s3_bucket.bucket.bucket}" >> application.properties
 echo "aws.sns.arn=${aws_sns_topic.verification_notice.arn}" >> application.properties
 
 echo "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver" >> application.properties
-echo "spring.datasource.jdbc-url=jdbc:mysql://${aws_db_instance.db_instance.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC" >> application.properties
+echo "spring.datasource.jdbc-url=jdbc:mysql://${aws_db_instance.db_instance.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC&sslMode=REQUIRED" >> application.properties
 echo "spring.datasource.username=${aws_db_instance.db_instance.username}" >> application.properties
 echo "spring.datasource.password=${aws_db_instance.db_instance.password}" >> application.properties
 
 echo "spring.seconddatasource.driverClassName=com.mysql.cj.jdbc.Driver" >> application.properties
-echo "spring.seconddatasource.jdbc-url=jdbc:mysql://${aws_db_instance.db_instance_replica.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC" >> application.properties
+echo "spring.seconddatasource.jdbc-url=jdbc:mysql://${aws_db_instance.db_instance_replica.endpoint}/${aws_db_instance.db_instance.name}?serverTimezone=UTC&sslMode=REQUIRED" >> application.properties
 echo "spring.seconddatasource.username=${aws_db_instance.db_instance.username}" >> application.properties
 echo "spring.seconddatasource.password=${aws_db_instance.db_instance.password}" >> application.properties
 
@@ -530,9 +523,9 @@ resource "aws_security_group" "lb_security_group" {
   vpc_id      = aws_vpc.vpc.id
 
   ingress {
-    description      = "TCP Access"
-    from_port        = 80
-    to_port          = 80
+    description      = "HTTPS Access"
+    from_port        = 443
+    to_port          = 443
     protocol         = var.wsg_protocol
     ipv6_cidr_blocks = ["::/0"]
     cidr_blocks      = [var.route_destination_cidr_block]
@@ -546,7 +539,7 @@ resource "aws_security_group" "lb_security_group" {
   }
 
   tags = {
-    Name = "application"
+    Name = "load_balancer"
   }
 }
 
@@ -562,10 +555,12 @@ resource "aws_lb" "load_balancer" {
   }
 }
 
-resource "aws_lb_listener" "front_end" {
+resource "aws_lb_listener" "https_listener" {
   load_balancer_arn = aws_lb.load_balancer.arn
-  port              = "80"
-  protocol          = "HTTP"
+  port              = "443"
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-2016-08"
+  certificate_arn   = "arn:aws:acm:us-east-1:370412597903:certificate/611b79ed-4972-458f-b96b-7b09b2155a11"
 
   default_action {
     type             = "forward"
@@ -594,9 +589,9 @@ resource "aws_autoscaling_attachment" "tg_attachment" {
 }
 
 resource "aws_dynamodb_table" "dynamodb_table" {
-  name     = "verification"
-  hash_key = "email"
-  read_capacity = 5
+  name           = "verification"
+  hash_key       = "email"
+  read_capacity  = 5
   write_capacity = 5
 
   billing_mode = "PAY_PER_REQUEST"
@@ -667,4 +662,186 @@ resource "aws_sns_topic_subscription" "sns_to_lambda" {
   topic_arn  = aws_sns_topic.verification_notice.arn
   protocol   = "lambda"
   endpoint   = aws_lambda_function.lambda.arn
+}
+
+resource "aws_kms_key" "ebs_key" {
+  description             = "KMS key for ebs"
+  deletion_window_in_days = 7
+  policy = <<EOF
+  {
+    "Id": "key-consolepolicy-3",
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "Enable IAM User Permissions",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::370412597903:root"
+            },
+            "Action": "kms:*",
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow access for Key Administrators",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": [
+                    "arn:aws:iam::370412597903:role/CodeDeployServiceRole",
+                    "arn:aws:iam::370412597903:role/CodeDeployEC2ServiceRole",
+                    "arn:aws:iam::370412597903:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+                ]
+            },
+            "Action": [
+                "kms:Create*",
+                "kms:Describe*",
+                "kms:Enable*",
+                "kms:List*",
+                "kms:Put*",
+                "kms:Update*",
+                "kms:Revoke*",
+                "kms:Disable*",
+                "kms:Get*",
+                "kms:Delete*",
+                "kms:TagResource",
+                "kms:UntagResource",
+                "kms:ScheduleKeyDeletion",
+                "kms:CancelKeyDeletion"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow use of the key",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": [
+                    "arn:aws:iam::370412597903:role/CodeDeployServiceRole",
+                    "arn:aws:iam::370412597903:role/CodeDeployEC2ServiceRole",
+                    "arn:aws:iam::370412597903:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+                ]
+            },
+            "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:DescribeKey"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow attachment of persistent resources",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": [
+                    "arn:aws:iam::370412597903:role/CodeDeployServiceRole",
+                    "arn:aws:iam::370412597903:role/CodeDeployEC2ServiceRole",
+                    "arn:aws:iam::370412597903:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+                ]
+            },
+            "Action": [
+                "kms:CreateGrant",
+                "kms:ListGrants",
+                "kms:RevokeGrant"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "Bool": {
+                    "kms:GrantIsForAWSResource": "true"
+                }
+            }
+        }
+    ]
+}
+EOF
+}
+
+resource "aws_kms_key" "rds_key" {
+  description             = "KMS key for rds"
+  deletion_window_in_days = 7
+  policy = <<EOF
+  {
+    "Id": "key-consolepolicy-3",
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "Enable IAM User Permissions",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::370412597903:root"
+            },
+            "Action": "kms:*",
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow access for Key Administrators",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": [
+                    "arn:aws:iam::370412597903:role/CodeDeployServiceRole",
+                    "arn:aws:iam::370412597903:role/CodeDeployEC2ServiceRole",
+                    "arn:aws:iam::370412597903:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+                ]
+            },
+            "Action": [
+                "kms:Create*",
+                "kms:Describe*",
+                "kms:Enable*",
+                "kms:List*",
+                "kms:Put*",
+                "kms:Update*",
+                "kms:Revoke*",
+                "kms:Disable*",
+                "kms:Get*",
+                "kms:Delete*",
+                "kms:TagResource",
+                "kms:UntagResource",
+                "kms:ScheduleKeyDeletion",
+                "kms:CancelKeyDeletion"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow use of the key",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": [
+                    "arn:aws:iam::370412597903:role/CodeDeployServiceRole",
+                    "arn:aws:iam::370412597903:role/CodeDeployEC2ServiceRole",
+                    "arn:aws:iam::370412597903:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+                ]
+            },
+            "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:DescribeKey"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow attachment of persistent resources",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": [
+                    "arn:aws:iam::370412597903:role/CodeDeployServiceRole",
+                    "arn:aws:iam::370412597903:role/CodeDeployEC2ServiceRole",
+                    "arn:aws:iam::370412597903:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+                ]
+            },
+            "Action": [
+                "kms:CreateGrant",
+                "kms:ListGrants",
+                "kms:RevokeGrant"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "Bool": {
+                    "kms:GrantIsForAWSResource": "true"
+                }
+            }
+        }
+    ]
+}
+EOF
 }
