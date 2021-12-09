@@ -18,6 +18,6 @@ output "bucket" {
   value = aws_s3_bucket.bucket.bucket
 }
 
-output "rds" {
-  value = aws_db_instance.db_instance.endpoint
-}
+// output "rds" {
+//   value = aws_db_instance.db_instance.endpoint
+// }
